@@ -45,7 +45,12 @@ SARIF and archives the file.
 - Jenkins credentials (Secret text):
   - `ssc-ci-token` – SSC CIToken
   - `sc-client-auth-token` – ScanCentral SAST client auth token
-- Pipeline parameters: `SSC_URL`, `SSC_APP_NAME`, `FCLI_VERSION`, `EXPORT_SARIF`.
+- Jenkins credential (Username with password): `nexus-credentials` – Nexus user/token for
+  Maven and npm dependency resolution via `https://repo.onfortify.com`. Maven is pointed at
+  Nexus via [.mvn/settings.xml](.mvn/settings.xml), loaded automatically through
+  [.mvn/maven.config](.mvn/maven.config). npm (`npx @fortify/setup`) uses `NPM_REGISTRY` from
+  the Jenkinsfile through a job-scoped `.npmrc-ci`. Locally, set `NEXUS_USERNAME`/`NEXUS_PASSWORD`.
+- Pipeline parameters: `SSC_URL`, `SSC_APP_NAME`, `ISSUE_TEMPLATE`, `FCLI_VERSION`, `EXPORT_SARIF`.
 
 The SSC application version defaults to `<SSC_APP_NAME>:<BRANCH_NAME>` (or `:main` for
 non-multibranch jobs).

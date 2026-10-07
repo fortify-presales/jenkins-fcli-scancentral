@@ -10,6 +10,7 @@ pipeline {
     parameters {
         string(name: 'SSC_URL', defaultValue: 'https://ssc.onfortify.com', description: 'Fortify SSC URL')
         string(name: 'SSC_APP_NAME', defaultValue: 'jenkins-fcli-scancentral', description: 'SSC application name')
+        string(name: 'ISSUE_TEMPLATE', defaultValue: 'Prioritized High Risk Issue Template', description: 'SSC issue template name or id used when creating a new application version')
         string(name: 'FCLI_VERSION', defaultValue: 'v3', description: "fcli version to bootstrap, e.g. 'v3', 'v3.28' or 'v3.28.0'")
         booleanParam(name: 'EXPORT_SARIF', defaultValue: true, description: 'Export SAST results to SARIF and archive them')
     }
@@ -24,6 +25,7 @@ pipeline {
         PACKAGE_EXTRA_OPTS       = '-bt mvn'
         SC_CLIENT_VERSION        = 'auto'
         DO_SETUP                 = 'true'
+        SETUP_EXTRA_OPTS         = "--issue-template \"${params.ISSUE_TEMPLATE}\""
         DO_SAST_SCAN             = 'true'
         DO_DEBRICKED_SCAN        = 'false'
         DO_WAIT                  = 'true'
@@ -36,6 +38,8 @@ pipeline {
         FCLI_BOOTSTRAP_CACHE_DIR = "${env.WORKSPACE}/.fortify-cache/fcli/bootstrap"
         FORTIFY_DATA_DIR         = "${env.WORKSPACE}/.fortify"
         FORTIFY_ENV_FILE         = "${env.WORKSPACE}/.fortify-env.sh"
+        NPM_REGISTRY             = 'https://repo.onfortify.com/repository/npm-public/'
+        NPM_CONFIG_USERCONFIG    = "${env.WORKSPACE}/.npmrc-ci"
     }
 
     stages {
@@ -47,7 +51,9 @@ pipeline {
 
         stage('Build') {
             steps {
-                sh 'mvn -B clean verify'
+                withCredentials([usernamePassword(credentialsId: 'nexus-credentials', usernameVariable: 'NEXUS_USERNAME', passwordVariable: 'NEXUS_PASSWORD')]) {
+                    sh 'mvn -B clean verify'
+                }
             }
             post {
                 success {
@@ -58,13 +64,21 @@ pipeline {
 
         stage('Setup fcli') {
             steps {
-                sh '''
-                    set -eu
-                    npx -y "$FORTIFY_SETUP" env init --tools=fcli:auto
-                    npx -y "$FORTIFY_SETUP" env shell > "$FORTIFY_ENV_FILE"
-                    . "$FORTIFY_ENV_FILE"
-                    fcli --version
-                '''
+                withCredentials([usernamePassword(credentialsId: 'nexus-credentials', usernameVariable: 'NEXUS_USERNAME', passwordVariable: 'NEXUS_PASSWORD')]) {
+                    sh '''
+                        set -eu
+                        umask 077
+                        NPM_AUTH=$(printf '%s:%s' "$NEXUS_USERNAME" "$NEXUS_PASSWORD" | base64 | tr -d '\\n')
+                        {
+                            echo "registry=$NPM_REGISTRY"
+                            echo "//${NPM_REGISTRY#*://}:_auth=$NPM_AUTH"
+                        } > "$NPM_CONFIG_USERCONFIG"
+                        npx -y "$FORTIFY_SETUP" env init --tools=fcli:auto
+                        npx -y "$FORTIFY_SETUP" env shell > "$FORTIFY_ENV_FILE"
+                        . "$FORTIFY_ENV_FILE"
+                        fcli --version
+                    '''
+                }
             }
         }
 
@@ -72,7 +86,9 @@ pipeline {
             steps {
                 withCredentials([
                     string(credentialsId: 'ssc-ci-token', variable: 'SSC_TOKEN'),
-                    string(credentialsId: 'sc-client-auth-token', variable: 'SC_SAST_TOKEN')
+                    string(credentialsId: 'sc-client-auth-token', variable: 'SC_SAST_TOKEN'),
+                    // ScanCentral packaging (-bt mvn) resolves dependencies through Nexus too
+                    usernamePassword(credentialsId: 'nexus-credentials', usernameVariable: 'NEXUS_USERNAME', passwordVariable: 'NEXUS_PASSWORD')
                 ]) {
                     // Single quotes keep secrets out of Groovy string interpolation
                     sh '''
@@ -110,7 +126,7 @@ pipeline {
     post {
         always {
             dir("${env.WORKSPACE}") {
-                sh 'rm -rf .fortify-cache .fortify .fortify-env.sh'
+                sh 'rm -rf .fortify-cache .fortify .fortify-env.sh .npmrc-ci'
             }
         }
     }
