@@ -99,9 +99,9 @@ pipeline {
                         sastScanOptions.add(inheritedScanOptions)
                     }
                     if (sensorPool) {
-                        sastScanOptions.add("--pool='${sensorPool}'")
+                        sastScanOptions.add("--pool \"${sensorPool}\"")
                     }
-                    sastScanOptions.add("--sargs='-scan-policy ${scanPolicy}'")
+                    sastScanOptions.add("--sargs \"-scan-policy ${scanPolicy}\"")
                     fcliCiOptions.add("SAST_SCAN_EXTRA_OPTS=${sastScanOptions.join(' ')}")
                     def scanCredentials = [
                         string(credentialsId: 'ssc-ci-token', variable: 'SSC_TOKEN'),

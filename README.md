@@ -234,8 +234,14 @@ pipeline rule if your organization uses a different feature-branch naming conven
 For `feature/login` with `SAST_SENSOR_POOL=linux-standard`, the pipeline passes:
 
 ```text
-SAST_SCAN_EXTRA_OPTS=--pool='linux-standard' --sargs='-scan-policy devops'
+SAST_SCAN_EXTRA_OPTS=--pool "linux-standard" --sargs "-scan-policy devops"
 ```
+
+These are the contents of the environment variable, not a shell assignment. The fcli 3.28.0
+action tokenizer groups double-quoted tokens, not shell-style single-quoted values. Keep the
+option and its quoted value separate (`--sargs "-scan-policy devops"`), rather than using
+`--sargs='-scan-policy devops'` or `--sargs="-scan-policy devops"`. The same applies to pool
+names containing spaces.
 
 Unrelated inherited `SAST_SCAN_EXTRA_OPTS`, such as `--scan-timeout=60`, are preserved.
 Remove `--pool`, `--sensor-pool`, `--sargs`, and `--scan-args` from global/job defaults: these
