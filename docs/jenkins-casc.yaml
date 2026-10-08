@@ -1,0 +1,45 @@
+jenkins:
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: SSC_URL
+            value: "https://ssc.example.com"
+          - key: AVIATOR_URL
+            value: "https://aviator.example.com"
+          - key: FCLI_BOOTSTRAP_VERSION
+            value: "v3"
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: "ssc-ci-token"
+              secret: "${JENKINS_SSC_CI_TOKEN}"
+              description: "SSC CIToken for the CI pipeline"
+          - string:
+              scope: GLOBAL
+              id: "sc-client-auth-token"
+              secret: "${JENKINS_SC_SAST_TOKEN}"
+              description: "ScanCentral SAST client authentication token"
+          - string:
+              scope: GLOBAL
+              id: "debricked-access-token"
+              secret: "${JENKINS_DEBRICKED_ACCESS_TOKEN}"
+              description: "Debricked access token"
+          - string:
+              scope: GLOBAL
+              id: "aviator-token"
+              secret: "${JENKINS_AVIATOR_TOKEN}"
+              description: "Fortify Aviator JWT"
+          - string:
+              scope: GLOBAL
+              id: "git-push-token"
+              secret: "${JENKINS_GIT_PUSH_TOKEN}"
+              description: "Repository push token for Aviator remediations"
+          - usernamePassword:
+              scope: GLOBAL
+              id: "nexus-credentials"
+              username: "${JENKINS_NEXUS_USERNAME}"
+              password: "${JENKINS_NEXUS_PASSWORD}"
+              description: "Nexus credentials for Maven and npm"
