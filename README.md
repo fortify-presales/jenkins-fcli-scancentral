@@ -37,6 +37,145 @@ the source with ScanCentral Client (`-bt mvn`), submits a ScanCentral SAST scan,
 completion and prints an application version summary. Optionally it exports results to
 SARIF, publishes findings and trends through Warnings NG, and archives the file.
 
+### Reusable Jenkins Shared Library
+
+The Fortify lifecycle now lives in [vars/fortifyCi.groovy](vars/fortifyCi.groovy), not in each
+application Jenkinsfile. [vars/fortifyPipeline.groovy](vars/fortifyPipeline.groovy) provides an
+optional standard pipeline with replaceable build steps. The application [Jenkinsfile](Jenkinsfile)
+retains its parameters, checkout, Maven build, and JAR archiving, then calls `fortifyCi`.
+
+**Register the library before running the updated Jenkinsfile:**
+
+1. Publish these changes to a repository Jenkins can read. This repository has the required
+   root-level `vars/` layout; alternatively copy both scripts into a dedicated shared-library
+   repository, retaining that layout.
+2. Configure a folder-scoped **Pipeline Library**, or an appropriate global untrusted/sandboxed
+   library under **Manage Jenkins > System** (section names vary by Jenkins version).
+3. Name it `fortify-pipeline`, set the default version to the branch containing these changes
+   (initially `main`), and use **Modern SCM > Git** with the repository URL and read credentials.
+   Implicit loading is not required; the Jenkinsfile uses `@Library('fortify-pipeline') _`.
+4. For production, publish and select an immutable release tag. Control who can change library
+   code or select alternate versions. A globally trusted library grants elevated controller
+   capabilities to its maintainers; this implementation does not require that trust mode.
+
+Applications with existing pipelines can keep all build/deploy stages and call the shared step
+inside a stage on their already allocated Linux agent/workspace:
+
+```groovy
+@Library('fortify-pipeline') _
+
+pipeline {
+  agent { label 'linux && java' }
+  stages {
+    stage('Build') {
+      steps {
+        sh './mvnw -B clean verify'
+      }
+    }
+    stage('Security') {
+      steps {
+        fortifyCi(
+          appName: 'orders-service',
+          sensorPool: 'linux-standard',
+          aviatorAudit: true,
+          credentials: [ssc: 'orders-ssc-token']
+        )
+      }
+    }
+  }
+}
+```
+
+This example assumes checkout, required toolchain, Maven repository configuration, and any build
+credentials are already handled by that application. The shared step binds its own credentials
+for bootstrap and ScanCentral packaging, not for preceding application-owned build stages.
+
+Teams wanting the standard checkout/build/security sequence can instead replace their entire
+Jenkinsfile with a wrapper call. Its closure replaces only the build steps:
+
+```groovy
+@Library('fortify-pipeline') _
+
+fortifyPipeline(
+  appName: 'orders-service',
+  agentLabel: 'linux && java',
+  sensorPool: 'linux-standard',
+  npmRegistry: 'https://repo.onfortify.com/repository/npm-public/',
+  credentials: [repository: 'nexus-credentials'],
+  artifacts: 'target/*.jar'
+) {
+  sh './mvnw -B clean verify -Pproduction'
+}
+```
+
+Without a closure, the wrapper runs `mvn -B clean verify`. Its wrapper-only settings are
+`agentLabel`, `jdkTool` (default `jdk17`), `mavenTool` (default `maven3`), `buildCommand`, and
+`artifacts` (default `target/*.jar`; empty disables build-artifact archiving). All other keys
+are forwarded to `fortifyCi`. The wrapper binds `credentials.repository`, when supplied, to
+`NEXUS_USERNAME`/`NEXUS_PASSWORD` around default or custom build steps as well as security steps.
+Build scripts, manifests, and dependency-manager configuration remain application-owned.
+The wrapper does not declare job parameters; use the step in your own declarative pipeline
+when you need custom parameters, additional stages, agents, or deployment logic.
+
+### Shared-Library Configuration
+
+Precedence is **library defaults > recognized environment defaults > explicit call arguments**,
+with the rightmost value winning. Credential maps merge by key, so a single override does not
+remove the other defaults. Unknown settings and non-Boolean feature values are rejected.
+Pass credential IDs only, never actual tokens or passwords, in the configuration map.
+
+| Setting | Default / purpose |
+|---|---|
+| `appName` | Required SSC application name |
+| `versionName` | `BRANCH_NAME`, or `main` outside multibranch jobs |
+| `sscUrl` | `SSC_URL`; required |
+| `issueTemplate` | `FORTIFY_ISSUE_TEMPLATE`, otherwise `Prioritized High Risk Issue Template` |
+| `sensorPool` | `FORTIFY_SENSOR_POOL`, otherwise empty/server-side selection |
+| `scanPolicy` | Branch-derived; explicit `security` or `classic` can strengthen feature scans; `devops` is rejected on non-feature branches |
+| `scanTimeoutMinutes` | Optional positive integer |
+| `packageExtraOpts`, `scClientVersion` | `-bt mvn`, `auto`; override for the application's build toolchain |
+| `npmRegistry` | `NPM_REGISTRY`, otherwise public npm; this project explicitly supplies Nexus |
+| `setupPackage` | `@fortify/setup@2`; use an approved version |
+| `fcliBootstrapVersion`, `fcliBootstrapUrl`, `toolDefinitions` | Corresponding `FCLI_BOOTSTRAP_VERSION`, `FCLI_BOOTSTRAP_URL`, `TOOL_DEFINITIONS` environment values |
+| `aviatorUrl`, `aviatorApp` | `AVIATOR_URL`, `AVIATOR_APP`; application defaults to `appName` |
+| `dastSettings` | Numeric scan-settings ID when DAST is enabled |
+| `dastScan`, `waitForDast`, `debrickedScan` | Boolean, default false |
+| `aviatorAudit`, `aviatorRemediations`, `checkPolicy` | Boolean, default false; remediations require and enable auditing |
+| `exportSarif`, `sarifFile` | true, `fortify-sast.sarif`; file name only, no directory traversal |
+| `credentials` | Jenkins credential ID map described below |
+
+Credential keys/defaults: `ssc: 'ssc-ci-token'`, `scSast: 'sc-client-auth-token'`,
+`repository: null`, `debricked: 'debricked-access-token'`, `aviator: 'aviator-token'`,
+`gitPush: 'git-push-token'`. `repository` is optional for public dependency repositories;
+this project's authenticated Maven/npm mirrors require `repository: 'nexus-credentials'`.
+Disabled optional integrations do not bind their credential IDs.
+
+The step owns scan-policy arguments, remediation action/branch routing, explicit `DO_*`
+feature flags, and its temporary paths. Do not override these through raw global fcli settings.
+Remediations always use `push-remediations` with a separate build-specific branch, not a PR;
+arbitrary remediation actions are not exposed as a library option. Use folder-scoped credentials
+and SCM trust rules: library validation is not a replacement for Jenkins authorization.
+Both entry points reject fork PRs; applications using the step must separately protect their
+own build/deployment credential scopes before calling it.
+
+Bootstrap, scanning, and reporting run on the caller's agent/workspace. Private npm configuration,
+environment files, and fcli state are stored under `pwd(tmp: true)/fortify-ci` and deleted in
+`finally`, including on failures. Tool installations managed by Fortify setup are not removed.
+Do not invoke the step concurrently in the same workspace; separate workspaces are needed for
+parallel scans. The scan fails before SARIF publication on policy/action failure, as before.
+
+Run the local regression suite with a compatible Groovy runtime:
+
+```bash
+groovy tests/jenkins/SharedLibraryTest.groovy
+```
+
+[The suite](tests/jenkins/SharedLibraryTest.groovy) mocks Jenkins steps and covers the consumer,
+custom builds, credential overrides, argument tokenization, fork rejection, feature flags,
+remediation branches, reporting, and failure cleanup. It does not validate Jenkins CPS/sandbox
+behavior, Declarative plugin execution, real credentials, or Fortify connectivity; pilot the
+registered library on Jenkins before rolling it out to other applications.
+
 ### Prerequisites
 
 - Agent labelled `linux && java` (both labels), with Node.js/`npx`, Git, and standard Linux shell utilities including `base64` on `PATH`. Node.js is not installed by the Jenkinsfile. Provide network access to the Git repository, SSC, ScanCentral Controller, and dependency/tool repositories, with trusted internal TLS certificates where applicable.
@@ -104,9 +243,9 @@ to byte-identical mirrored artifacts; merely proxying the original ZIP does not 
 tool downloads. Do not embed credentials in URLs.
 
 The current Jenkinsfile routes npm through Nexus, but fcli and supporting tools still use
-public sources unless these additional mirrors are configured. `NPM_REGISTRY` is defined
-in the Jenkinsfile, so a global value does not override it. For a different repository manager,
-update that setting and the Maven mirror in [.mvn/settings.xml](.mvn/settings.xml).
+public sources unless these additional mirrors are configured. The explicit `npmRegistry`
+argument in the Jenkinsfile overrides a global `NPM_REGISTRY` value. For a different repository
+manager, update that argument and the Maven mirror in [.mvn/settings.xml](.mvn/settings.xml).
 Follow [the Nexus guide](docs/nexus-mirroring.md) or
 [the Artifactory guide](docs/artifactory-mirroring.md) for repository provisioning and validation.
 
@@ -123,7 +262,7 @@ fcli aviator app create "jenkins-fcli-scancentral"
 Application creation alone does not establish the required quota or user access. Keep
 administrator credentials out of ordinary build jobs. Store the audit user's actual JWT
 contents as the Jenkins Secret text credential `aviator-token`; do not use a `file:` prefix.
-Configure `AVIATOR_URL` as a non-secret endpoint.
+Configure `AVIATOR_URL` as a non-secret endpoint, or pass `aviatorUrl` to the shared step.
 
 For `fcli action run ci`, `AVIATOR_APP` defaults to the SSC application name, without the
 version suffix. For example, `jenkins-fcli-scancentral:main` maps to the Aviator application
@@ -131,7 +270,7 @@ version suffix. For example, `jenkins-fcli-scancentral:main` maps to the Aviator
 or pipeline environment block:
 
 ```groovy
-AVIATOR_APP = 'your-aviator-application-name'
+fortifyCi(appName: 'orders-service', aviatorApp: 'your-aviator-application-name', aviatorAudit: true)
 ```
 
 Prefer application-specific configuration over one global Aviator application for unrelated
@@ -180,18 +319,18 @@ and open a PR manually. Automatic PR creation would require a separate Git-provi
 
 - Set `DAST_SETTINGS` to the numeric ScanCentral DAST scan-settings ID for each application/job. Find IDs with `fcli sc-dast scan-settings list`; the setting is required only when `ENABLE_DAST_SCAN` is selected. Use the numeric ID, not a CI/CD token.
 - `SSC_APP_NAME` and `DAST_SETTINGS` are application/job-specific parameters. Aviator availability and entitlements depend on tenant configuration. Aviator remediations are preview functionality; on Jenkins they push a branch but do not create a pull request.
-- Jenkins uses the `nexus-credentials` credential for Maven and npm dependency resolution via `https://repo.onfortify.com`. Maven is configured through [.mvn/settings.xml](.mvn/settings.xml) and [.mvn/maven.config](.mvn/maven.config). npm (`npx @fortify/setup`) uses `NPM_REGISTRY` from the Jenkinsfile through a job-scoped `.npmrc-ci`. Locally, set `NEXUS_USERNAME`/`NEXUS_PASSWORD`.
+- Jenkins uses the `nexus-credentials` credential for Maven and npm dependency resolution via `https://repo.onfortify.com`. Maven is configured through [.mvn/settings.xml](.mvn/settings.xml) and [.mvn/maven.config](.mvn/maven.config). npm (`npx @fortify/setup`) uses the shared step's `npmRegistry` setting through a private temporary config file. Locally, set `NEXUS_USERNAME`/`NEXUS_PASSWORD`.
 - Pipeline parameters: `SSC_APP_NAME`, `ISSUE_TEMPLATE`, `SAST_SENSOR_POOL`, `DAST_SETTINGS`, `ENABLE_DAST_SCAN`, `WAIT_FOR_DAST`, `ENABLE_DEBRICKED_SCAN`, `ENABLE_AVIATOR_AUDIT`, `ENABLE_AVIATOR_REMEDIATIONS`, `ENABLE_CHECK_POLICY`, `EXPORT_SARIF`.
 
 The SSC application version defaults to `<SSC_APP_NAME>:<BRANCH_NAME>` (or `:main` for
 non-multibranch jobs).
 
 The `ENABLE_*` parameters opt into features for an individual build and default to false.
-Checked options are passed to fcli as `DO_*=true`; unchecked options are left unset so the
-fcli CI action uses its own defaults. `WAIT_FOR_DAST` requires `ENABLE_DAST_SCAN`. If only
-`ENABLE_AVIATOR_REMEDIATIONS` is selected, the pipeline sets `DO_AVIATOR_AUDIT=false` to avoid
-also triggering the audit that fcli enables by default when Aviator credentials are present.
-`DO_SAST_EXPORT` remains false in the Jenkinsfile because this pipeline has a separate SARIF
+The shared step passes explicit `DO_*=true/false` values so unchecked integrations cannot
+be enabled by inherited global settings. `WAIT_FOR_DAST` requires `ENABLE_DAST_SCAN`.
+`ENABLE_AVIATOR_REMEDIATIONS` also enables the audit needed to generate the remediation artifact;
+the fcli CI remediation step depends on successful auditing and SSC processing.
+`DO_SAST_EXPORT` remains false in the shared step because this pipeline has a separate SARIF
 export stage controlled by `EXPORT_SARIF`. See the
 [fcli ci action docs](https://fortify.github.io/fcli/latest/generic-actions.html) for all options.
 
@@ -261,6 +400,8 @@ option and its quoted value separate (`--sargs "-scan-policy devops"`), rather t
 names containing spaces.
 
 Unrelated inherited `SAST_SCAN_EXTRA_OPTS`, such as `--scan-timeout=60`, are preserved.
+When supplying the typed `scanTimeoutMinutes` setting, remove any raw `--scan-timeout` default
+to avoid duplicate options.
 Remove `--pool`, `--sensor-pool`, `--sargs`, and `--scan-args` from global/job defaults: these
 conflict with the pipeline-owned pool/policy arguments and are rejected before submission.
 Move pool selection to `SAST_SENSOR_POOL`; additional SCA scan arguments would require extending
