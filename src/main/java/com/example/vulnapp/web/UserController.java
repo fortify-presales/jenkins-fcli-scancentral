@@ -20,7 +20,7 @@ public class UserController {
     // Intentional: SQL Injection
     @GetMapping("/users")
     public List<Map<String, Object>> findUsers(@RequestParam String name) {
-        String sql = "SELECT id, username, email FROM users WHERE username = ?";
-        return jdbcTemplate.queryForList(sql, name);
+        String sql = "SELECT id, username, email FROM users WHERE username = '" + name + "'";
+        return jdbcTemplate.queryForList(sql);
     }
 }
