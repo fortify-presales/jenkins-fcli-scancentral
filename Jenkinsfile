@@ -141,6 +141,10 @@ pipeline {
                     if (params.ENABLE_AVIATOR_REMEDIATIONS) {
                         scanCredentials.add(string(credentialsId: 'git-push-token', variable: 'GIT_PUSH_TOKEN'))
                         fcliCiOptions.add('DO_AVIATOR_REMEDIATIONS=true')
+                        def remediationRun = (env.BUILD_TAG ?: "build-${env.BUILD_NUMBER ?: 'unknown'}").replaceAll(/[^A-Za-z0-9_-]/, '-')
+                        def remediationBranch = "aviator/remediations/${remediationRun}"
+                        fcliCiOptions.add("AVIATOR_REMEDIATIONS_EXTRA_OPTS=--branch-name \"${remediationBranch}\"")
+                        echo "Aviator remediation destination: ${remediationBranch}"
                     }
                     if (params.ENABLE_CHECK_POLICY) {
                         fcliCiOptions.add('DO_CHECK_POLICY=true')

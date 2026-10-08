@@ -159,6 +159,23 @@ automatically opening a PR. PR-write permission is not needed solely for this pu
 Repository rules must allow the automation identity to create the remediation branch.
 Do not place the token in source control, plain global environment variables, logs, or chat.
 
+The pipeline explicitly passes `--branch-name` through `AVIATOR_REMEDIATIONS_EXTRA_OPTS`.
+Its destination is `aviator/remediations/<sanitized BUILD_TAG>`, for example
+`aviator/remediations/jenkins-fcli-scancentral_main-42`; if `BUILD_TAG` is unavailable,
+it falls back to `aviator/remediations/build-<BUILD_NUMBER>`. The destination is logged before
+the CI action runs. No branch is pushed if there are no remediation changes to commit.
+
+This explicit option is important for fcli 3.28.0: `push-remediations` defaults its destination
+to the environment variable `BRANCH_NAME`. Jenkins already sets that variable to the source
+branch (such as `main`), so relying on the action default can push remediations to the source
+branch instead of a separate review branch. Do not change Jenkins' `BRANCH_NAME` to work around
+this; SSC version mapping and source-branch selection still depend on it. The pipeline owns
+`AVIATOR_REMEDIATIONS_EXTRA_OPTS` when remediations are enabled and replaces any inherited value.
+
+Keep `main` and release branches protected against direct pushes by the automation identity,
+without bypass permissions, as a separate safeguard. Review the generated remediation branch
+and open a PR manually. Automatic PR creation would require a separate Git-provider integration.
+
 ### Per-Application Settings
 
 - Set `DAST_SETTINGS` to the numeric ScanCentral DAST scan-settings ID for each application/job. Find IDs with `fcli sc-dast scan-settings list`; the setting is required only when `ENABLE_DAST_SCAN` is selected. Use the numeric ID, not a CI/CD token.
