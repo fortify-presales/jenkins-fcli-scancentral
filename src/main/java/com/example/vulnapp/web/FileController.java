@@ -18,7 +18,11 @@ public class FileController {
     // Intentional: Path Traversal
     @GetMapping("/files")
     public byte[] download(@RequestParam String name) throws IOException {
-        File file = new File(baseDir, name);
+        File base = new File(baseDir).getCanonicalFile();
+        File file = new File(base, name).getCanonicalFile();
+        if (!file.toPath().startsWith(base.toPath())) {
+            throw new SecurityException("Access to the requested path is not allowed.");
+        }
         return Files.readAllBytes(file.toPath());
     }
 }
